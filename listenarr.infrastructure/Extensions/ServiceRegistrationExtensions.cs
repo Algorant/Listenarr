@@ -79,7 +79,7 @@ namespace Listenarr.Infrastructure.Extensions
                 .AddPolicyHandler(retryPolicy)
                 .AddPolicyHandler(circuitBreakerPolicy);
 
-            // Per-adapter named clients (qbittorrent, transmission, sabnzbd, nzbget)
+            // Per-adapter named clients (qbittorrent, transmission, deluge, sabnzbd, nzbget)
             services.AddHttpClient("qbittorrent")
                 .ConfigureHttpClient(client =>
                 {
@@ -132,6 +132,21 @@ namespace Listenarr.Infrastructure.Extensions
                 {
                     AutomaticDecompression = DecompressionMethods.All,
                     UseCookies = false
+                })
+                .SetHandlerLifetime(TimeSpan.FromMinutes(5))
+                .AddPolicyHandler(circuitBreakerPolicy)
+                .AddPolicyHandler(retryPolicy);
+
+            services.AddHttpClient("deluge")
+                .ConfigureHttpClient(client =>
+                {
+                    client.Timeout = TimeSpan.FromSeconds(30);
+                })
+                .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+                {
+                    AutomaticDecompression = DecompressionMethods.All,
+                    CookieContainer = new CookieContainer(),
+                    UseCookies = true
                 })
                 .SetHandlerLifetime(TimeSpan.FromMinutes(5))
                 .AddPolicyHandler(circuitBreakerPolicy)
@@ -207,6 +222,7 @@ namespace Listenarr.Infrastructure.Extensions
             services.AddScoped<IDownloadClientAdapter, TransmissionAdapter>();
             services.AddScoped<IDownloadClientAdapter, SabnzbdAdapter>();
             services.AddScoped<IDownloadClientAdapter, NzbgetAdapter>();
+            services.AddScoped<IDownloadClientAdapter, DelugeAdapter>();
 
             // Register the concrete factory as scoped so it can safely resolve scoped adapters via DI.
             services.AddScoped<IDownloadClientAdapterFactory, DownloadClientAdapterFactory>();

@@ -33,8 +33,8 @@
       <div v-else-if="configStore.downloadClientConfigurations.length === 0" class="empty-state">
         <PhDownloadSimple />
         <p>
-          No download clients configured. Add qBittorrent, Transmission, SABnzbd, or NZBGet to
-          download audiobooks.
+          No download clients configured. Add qBittorrent, Transmission, Deluge, SABnzbd, or NZBGet
+          to download audiobooks.
         </p>
       </div>
 
@@ -76,6 +76,9 @@
                 class="client-type-icon"
                 title="NZBGet"
               />
+              <span v-else-if="client.type === 'deluge'" class="client-type-badge" title="Deluge"
+                >Deluge</span
+              >
             </div>
             <div class="indexer-actions">
               <button
