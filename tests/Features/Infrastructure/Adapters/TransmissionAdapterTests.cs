@@ -15,15 +15,20 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
+using System.Net;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
 using Listenarr.Domain.Models;
 using Listenarr.Domain.Common;
 using Listenarr.Tests.Builders;
 using Listenarr.Tests.Common;
 using Listenarr.Tests.Mocks.Api;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
+using Listenarr.Infrastructure.Adapters;
 using Listenarr.Infrastructure.Torrents;
 
 namespace Listenarr.Tests.Features.Infrastructure.Adapters
@@ -166,6 +171,102 @@ namespace Listenarr.Tests.Features.Infrastructure.Adapters
         }
 
         [Fact]
+        [Trait("Method", "FetchDownloadsAsync")]
+        public async Task FetchDownloadsAsync_WhenTransmissionTorrentIsSeedingAndComplete_MarksDownloadCompleted()
+        {
+            var adapter = CreateFetchDownloadsAdapter("""
+            {
+              "result":"success",
+              "arguments":{
+                "torrents":[
+                  {
+                    "id":1,
+                    "hashString":"ABCDEF1234567890",
+                    "name":"Book.m4b",
+                    "percentDone":1.0,
+                    "leftUntilDone":0,
+                    "isFinished":false,
+                    "status":6,
+                    "downloadDir":"/downloads",
+                    "uploadRatio":1.0,
+                    "seedRatioMode":0,
+                    "seedRatioLimit":0,
+                    "seedIdleMode":0,
+                    "seedIdleLimit":0,
+                    "secondsSeeding":60
+                  }
+                ]
+              }
+            }
+            """);
+            var download = new Download
+            {
+                Id = "download-1",
+                Title = "Book.m4b",
+                Status = DownloadStatus.Downloading,
+                TotalSize = 100,
+                Metadata = new Dictionary<string, object>
+                {
+                    ["TorrentHash"] = "ABCDEF1234567890"
+                }
+            };
+
+            var results = await adapter.FetchDownloadsAsync(_client!, [download], CancellationToken.None);
+
+            Assert.Single(results);
+            Assert.Equal(DownloadStatus.Completed, results[0].Status);
+            Assert.Equal(100.0M, results[0].Progress);
+        }
+
+        [Fact]
+        [Trait("Method", "FetchDownloadsAsync")]
+        public async Task FetchDownloadsAsync_WhenTransmissionTorrentIsStillDownloading_DoesNotMarkCompleted()
+        {
+            var adapter = CreateFetchDownloadsAdapter("""
+            {
+              "result":"success",
+              "arguments":{
+                "torrents":[
+                  {
+                    "id":1,
+                    "hashString":"ABCDEF1234567890",
+                    "name":"Book.m4b",
+                    "percentDone":0.5,
+                    "leftUntilDone":50,
+                    "isFinished":false,
+                    "status":4,
+                    "downloadDir":"/downloads",
+                    "uploadRatio":0.0,
+                    "seedRatioMode":0,
+                    "seedRatioLimit":0,
+                    "seedIdleMode":0,
+                    "seedIdleLimit":0,
+                    "secondsSeeding":0
+                  }
+                ]
+              }
+            }
+            """);
+            var download = new Download
+            {
+                Id = "download-1",
+                Title = "Book.m4b",
+                Status = DownloadStatus.Downloading,
+                TotalSize = 100,
+                Metadata = new Dictionary<string, object>
+                {
+                    ["TorrentHash"] = "ABCDEF1234567890"
+                }
+            };
+
+            var results = await adapter.FetchDownloadsAsync(_client!, [download], CancellationToken.None);
+
+            Assert.Single(results);
+            Assert.Equal(DownloadStatus.Downloading, results[0].Status);
+            Assert.Equal(50.0M, results[0].Progress);
+        }
+
+        [Fact]
         [Trait("Method", "AddAsync")]
         public async Task GetImportItemAsync_WithSpaceInRemoteDirectory()
         {
@@ -210,6 +311,33 @@ namespace Listenarr.Tests.Features.Infrastructure.Adapters
                 Assert.Equal(FileUtils.GetAbsolutePath("downloads", "complete", "audiobooks", "Isaac Asimov - Le Cycle de Fondation - Tome 3 - Seconde Fondation "), retrievedQeue.ContentPath);
                 Assert.EndsWith(" ", retrievedQeue.ContentPath);
             }
+        }
+
+        private static TransmissionAdapter CreateFetchDownloadsAdapter(string torrentGetResponse)
+        {
+            var handler = new DelegatingHandlerMock(async (request, ct) =>
+            {
+                var body = await request.Content!.ReadAsStringAsync(ct);
+                using var document = JsonDocument.Parse(body);
+                var method = document.RootElement.GetProperty("method").GetString();
+                var responseBody = string.Equals(method, "session-get", StringComparison.OrdinalIgnoreCase)
+                    ? """
+                    {
+                      "result":"success",
+                      "arguments":{}
+                    }
+                    """
+                    : torrentGetResponse;
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(responseBody, Encoding.UTF8, "application/json")
+                };
+            });
+            var httpFactory = new Mock<IHttpClientFactory>();
+            httpFactory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(new HttpClient(handler));
+
+            return new TransmissionAdapter(httpFactory.Object, Mock.Of<ITorrentFileDownloader>(), NullLogger<TransmissionAdapter>.Instance);
         }
     }
 }

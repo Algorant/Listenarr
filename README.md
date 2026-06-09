@@ -26,9 +26,9 @@ Listenarr is a fast, feature-rich, cross-platform audiobook management server. B
 This fork is currently preparing two upstreamable download-client changes plus one private homelab integration branch.
 
 - [x] Document Deluge + Transmission roadmap in `origin/plan/deluge-transmission-roadmap`.
-- [ ] `fix/transmission-completed-seeding`: make completed/seeding Transmission torrents transition to completed/importable.
+- [x] `fix/transmission-completed-seeding`: make completed/seeding Transmission torrents transition to completed/importable.
 - [x] `feature/deluge-download-client-v2`: reapply Deluge Web JSON-RPC support onto current canary.
-- [ ] `integration/deluge-plus-transmission`: combine both changes for homelab Docker testing.
+- [x] `integration/deluge-plus-transmission`: combine both changes for homelab Docker testing.
 - [ ] Open focused upstream PRs against `canary` after validation.
 
 <p align="center">

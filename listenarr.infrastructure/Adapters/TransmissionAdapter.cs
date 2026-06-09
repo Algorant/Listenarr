@@ -1466,6 +1466,7 @@ namespace Listenarr.Infrastructure.Adapters
                             var percent = matching.TryGetProperty("percentDone", out var p) ? p.GetDouble() : 0.0;
                             var left = matching.TryGetProperty("leftUntilDone", out var l) ? l.GetInt64() : 0L;
                             var statusCode = matching.TryGetProperty("status", out var statusProp) ? statusProp.GetInt32() : 0;
+                            var isFinished = matching.TryGetProperty("isFinished", out var finishedProp) && finishedProp.GetBoolean();
 
                             // Map Transmission status code to status string (same as TransmissionAdapter)
                             var status = statusCode switch
@@ -1523,9 +1524,18 @@ namespace Listenarr.Infrastructure.Adapters
                                 continue;
                             }
 
-                            // Check for completion using same logic as TransmissionAdapter
-                            var isComplete = percent >= 1.0 && (status == "seeding" || status == "queued" || status == "paused");
-                            _logger.LogInformation("PollTransmission download {DownloadId}: percent={Percent}, status={Status}, isComplete={IsComplete}", dl.Id, percent, status, isComplete);
+                            // A Transmission torrent can be fully downloaded while still seeding.
+                            // Treat completed payloads in completed-side states as importable so the
+                            // monitor queues the normal import flow instead of leaving them Downloading.
+                            var payloadComplete = percent >= 1.0 || left <= 0 || isFinished;
+                            var isCompleteSideState = statusCode is 0 or 5 or 6 || isFinished;
+                            var isComplete = payloadComplete && isCompleteSideState;
+                            if (isComplete)
+                            {
+                                dl.Completed();
+                            }
+
+                            _logger.LogInformation("PollTransmission download {DownloadId}: percent={Percent}, left={Left}, status={Status}, isFinished={IsFinished}, isComplete={IsComplete}", dl.Id, percent, left, status, isFinished, isComplete);
                         }
                         catch (Exception ex) when (ex is not OperationCanceledException && ex is not OutOfMemoryException && ex is not StackOverflowException)
                         {
