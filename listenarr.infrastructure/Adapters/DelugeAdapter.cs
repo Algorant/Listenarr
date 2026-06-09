@@ -203,7 +203,10 @@ namespace Listenarr.Infrastructure.Adapters
 
         public async Task<QueueItem> GetImportItemAsync(DownloadClientConfiguration client, Download download, QueueItem queueItem, QueueItem? previousAttempt = null, CancellationToken ct = default)
         {
-            var current = (await GetQueueAsync(client, ct)).FirstOrDefault(i => string.Equals(i.Id, download.DownloadClientId, StringComparison.OrdinalIgnoreCase));
+            var externalId = download.GetExternalId();
+            var current = !string.IsNullOrWhiteSpace(externalId)
+                ? (await GetQueueAsync(client, ct)).FirstOrDefault(i => string.Equals(i.Id, externalId, StringComparison.OrdinalIgnoreCase))
+                : null;
             return current ?? queueItem;
         }
 
@@ -213,12 +216,15 @@ namespace Listenarr.Infrastructure.Adapters
             var byId = items.ToDictionary(i => i.DownloadId, StringComparer.OrdinalIgnoreCase);
             foreach (var d in downloads)
             {
-                if (!string.IsNullOrWhiteSpace(d.DownloadClientId) && byId.TryGetValue(d.DownloadClientId, out var item))
+                var externalId = d.GetExternalId();
+                if (!string.IsNullOrWhiteSpace(externalId) && byId.TryGetValue(externalId, out var item))
                 {
                     d.Progress = (decimal)item.Progress;
                     d.TotalSize = item.TotalSize;
                     d.DownloadedSize = Math.Max(0, item.TotalSize - item.RemainingSize);
                     d.DownloadPath = item.OutputPath;
+                    if (d.Status is DownloadStatus.Moved or DownloadStatus.Processing or DownloadStatus.ImportPending)
+                        continue;
                     if (item.Status == DownloadItemStatus.Completed) d.Status = DownloadStatus.Completed;
                     else if (item.Status == DownloadItemStatus.Failed) d.Status = DownloadStatus.Failed;
                     else if (item.Status == DownloadItemStatus.Paused) d.Status = DownloadStatus.Paused;

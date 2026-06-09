@@ -121,6 +121,73 @@ namespace Listenarr.Tests.Features.Infrastructure.Adapters
             Assert.Contains("daemon", message, StringComparison.OrdinalIgnoreCase);
         }
 
+        [Fact]
+        public async Task FetchDownloadsAsync_MatchesDownloadsByExternalClientId()
+        {
+            var adapter = CreateAdapter(BuildUpdateUiResponse("Seeding", 100.0, "listenarr"));
+            var client = CreateClient(category: "listenarr");
+            var download = new Download
+            {
+                Id = "listenarr-download-1",
+                DownloadClientId = client.Id,
+                Status = DownloadStatus.Queued
+            };
+            download.SetExternalId("ABCDEF1234567890");
+
+            var updated = await adapter.FetchDownloadsAsync(client, [download], CancellationToken.None);
+
+            Assert.Single(updated);
+            Assert.Equal(DownloadStatus.Completed, updated[0].Status);
+            Assert.Equal(100m, updated[0].Progress);
+            Assert.Equal(100, updated[0].DownloadedSize);
+            Assert.Equal("/downloads/Book.m4b", updated[0].DownloadPath);
+        }
+
+        [Fact]
+        public async Task GetImportItemAsync_MatchesQueueItemByExternalClientId()
+        {
+            var adapter = CreateAdapter(BuildUpdateUiResponse("Seeding", 100.0, "listenarr"));
+            var client = CreateClient(category: "listenarr");
+            var download = new Download
+            {
+                Id = "listenarr-download-1",
+                DownloadClientId = client.Id
+            };
+            download.SetExternalId("ABCDEF1234567890");
+            var fallback = new QueueItem
+            {
+                Id = "listenarr-download-1",
+                Title = "Fallback"
+            };
+
+            var item = await adapter.GetImportItemAsync(client, download, fallback, null, CancellationToken.None);
+
+            Assert.Equal("ABCDEF1234567890", item.Id);
+            Assert.Equal("Book.m4b", item.Title);
+            Assert.Equal("completed", item.Status);
+        }
+
+        [Fact]
+        public async Task FetchDownloadsAsync_PreservesImportedStatusWhenClientStillReportsCompletedTorrent()
+        {
+            var adapter = CreateAdapter(BuildUpdateUiResponse("Seeding", 100.0, "listenarr"));
+            var client = CreateClient(category: "listenarr");
+            var download = new Download
+            {
+                Id = "listenarr-download-1",
+                DownloadClientId = client.Id,
+                Status = DownloadStatus.Moved
+            };
+            download.SetExternalId("ABCDEF1234567890");
+
+            var updated = await adapter.FetchDownloadsAsync(client, [download], CancellationToken.None);
+
+            Assert.Single(updated);
+            Assert.Equal(DownloadStatus.Moved, updated[0].Status);
+            Assert.Equal(100m, updated[0].Progress);
+            Assert.Equal("/downloads/Book.m4b", updated[0].DownloadPath);
+        }
+
         private static DelugeAdapter CreateAdapter(string updateUiResponse)
         {
             var handler = new DelegatingHandlerMock(async (request, ct) =>
