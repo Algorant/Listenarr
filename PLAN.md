@@ -324,3 +324,266 @@ The integration branch remains private/local and should not be upstreamed as-is.
 - Whether the Transmission fix should use a shared helper or only mirror the existing qBittorrent completion override.
 - Whether homelab should deploy local Docker images directly or pushed GHCR images for Dockhand compatibility.
 - How much Deluge seed-limit cleanup behavior to implement in the first PR versus follow-up.
+
+## Deluge lifecycle audit from homelab integration test
+
+This section records issues discovered after deploying the private integration image `ghcr.io/algorant/listenarr:deluge-transmission-canary` into the homelab `arrs` stack.
+
+### Proven good in the deployed integration image
+
+- Listenarr can create a Deluge download-client config via API.
+- Deluge Web JSON-RPC authentication works through the local `deluge-web:8112` bridge to the Ultra.cc daemon.
+- Connection test returns `Deluge: connected to Web UI and daemon`.
+- Queue polling reaches the Deluge daemon and reports zero `listenarr`-labeled items when none exist.
+- Remote path mapping works for the intended isolated path:
+  - remote: `/home/incertophile/files/listenarr/`
+  - local: `/mnt/seedbox/files/listenarr/`
+- Deluge Label plugin is enabled on the Ultra.cc daemon.
+
+### Homelab failure that triggered this audit
+
+A controlled manual UI grab was attempted with `ultra-transmission` disabled and `ultra-deluge` enabled.
+
+Listenarr failed before adding the torrent to Deluge:
+
+```text
+No suitable download client found for torrent. Please configure and enable a torrent client (qBittorrent or Transmission) in Settings.
+```
+
+Relevant log evidence:
+
+```text
+Looking for torrent client. Found 1 enabled download clients: Ultra.cc Deluge (deluge)
+No torrent client (qBittorrent or Transmission) found among enabled clients
+```
+
+This means Deluge config/test support exists, but at least one send/grab selection path still only considers qBittorrent and Transmission.
+
+### Required patch checklist before the next image rebuild
+
+Patch these together before rebuilding/recontainerizing. Do not rebuild for only the first item; otherwise the next live test is likely to fail farther downstream.
+
+#### 1. Include Deluge in torrent client auto-selection
+
+Update all torrent-client selection paths to include `deluge`.
+
+Known locations from the old Deluge branch audit:
+
+- `listenarr.application/Downloads/DownloadService.cs`
+  - `GetAppropriateDownloadClient(bool isTorrent)`
+  - user-facing `neededClients` error text
+- `listenarr.application/Search/AutomaticSearchService.cs`
+  - its local appropriate-client selection helper
+- `listenarr.api/Controllers/LibraryController.cs`
+  - legacy/internal appropriate-client selection helper if still present/used
+
+Recommended behavior:
+
+- If one enabled torrent client exists and it is Deluge, select it.
+- Prefer existing behavior for qBittorrent/Transmission unless intentionally changed.
+- Suggested upstream-safe preference order:
+
+```text
+qBittorrent -> Transmission -> Deluge
+```
+
+For homelab Deluge testing, disable Transmission so Deluge is selected.
+
+Update messages from:
+
+```text
+qBittorrent or Transmission
+```
+
+to:
+
+```text
+qBittorrent, Transmission, or Deluge
+```
+
+#### 2. Create Deluge labels before setting them
+
+The Ultra.cc daemon currently has the Deluge Label plugin enabled, but the `listenarr` label did not exist during audit.
+
+Current observed labels included:
+
+```text
+btn, local-sonarr, mam, movieclub, mtv, radarr, radarr-test, readarr, sonarr, sonarr-test, stephen, ufc
+```
+
+Potential failure mode if unpatched:
+
+1. Deluge torrent is added successfully.
+2. `label.set_torrent` fails because `listenarr` label does not exist.
+3. The adapter logs/debug-suppresses the label failure.
+4. Queue filtering by configured category/label hides the torrent.
+5. Listenarr never tracks/imports it.
+
+Patch `DelugeAdapter.TrySetLabelAsync` or equivalent to:
+
+1. Call `label.get_labels`.
+2. If the configured label/category is missing, call `label.add`.
+3. Then call `label.set_torrent`.
+4. Treat label setup failure as at least a warning; consider failing add when a category is configured but cannot be applied, because category filtering depends on it.
+
+#### 3. Match Deluge downloads by external torrent id/hash, not client config id
+
+`DelugeAdapter.FetchDownloadsAsync` in the old branch appeared to do lookup roughly by `d.DownloadClientId`.
+
+That is wrong for active downloads:
+
+- `Download.DownloadClientId` is the Listenarr client config id, e.g. `ultra-deluge`.
+- Deluge queue item ids are torrent hashes.
+
+Patch matching to use, in order:
+
+1. `download.GetExternalId()`
+2. metadata `ClientDownloadId`
+3. metadata `TorrentHash`
+4. exact title match as a fallback only if unambiguous
+
+Avoid fuzzy title matching. Previous qBittorrent/Transmission work intentionally avoided fuzzy matching because it can import the wrong files.
+
+#### 4. Fix Deluge import item lookup
+
+`DelugeAdapter.GetImportItemAsync(DownloadClientConfiguration client, Download download, QueueItem queueItem, ...)` should retrieve the current Deluge item using the external torrent hash/id, not `download.DownloadClientId`.
+
+Expected behavior:
+
+- Build candidate ids from `download.GetExternalId()`, `ClientDownloadId`, and `TorrentHash`.
+- Search current Deluge items by `DownloadId`/hash.
+- Return translated queue item with accurate source files/content path.
+- Only fall back to the provided queue item if the current item cannot be found.
+
+Without this, the download may reach `Completed` and queue an import job but then fail during post-processing because source file resolution cannot find the correct Deluge item.
+
+#### 5. Treat Deluge as a torrent/hash client in metadata paths
+
+Where code special-cases torrent hash clients as qBittorrent/Transmission, include Deluge.
+
+Known locations from grep/audit:
+
+- `DownloadService.cs`
+  - after `clientGateway.AddAsync`, when setting `TorrentHash` metadata
+  - `RemoveFromClientAsync` torrent-id resolution
+- `DownloadQueueService.cs`
+  - `PersistDiscoveredClientIdentifiersAsync` should set `TorrentHash` for Deluge too
+- `MovedDownloadProcessor.cs`
+  - cross-client torrent fallback set should include `deluge` if that code path remains relevant
+
+Helper suggestion:
+
+```csharp
+private static bool IsTorrentHashClient(string? type) =>
+    string.Equals(type, "qbittorrent", StringComparison.OrdinalIgnoreCase) ||
+    string.Equals(type, "transmission", StringComparison.OrdinalIgnoreCase) ||
+    string.Equals(type, "deluge", StringComparison.OrdinalIgnoreCase);
+```
+
+Use a helper rather than repeating three-way checks.
+
+#### 6. Populate Deluge source files from `web.update_ui` file metadata
+
+The old branch `DelugeAdapter` requests `files` but appears to rely primarily on `ContentPath` scanning.
+
+Scanning may work when paths map perfectly, but explicit source files are safer and reduce ambiguity, especially for multi-file torrents.
+
+Deluge `web.update_ui` file entries look like:
+
+```json
+{
+  "index": 0,
+  "path": "Torrent Folder/Book.m4b",
+  "offset": 0,
+  "size": 123456
+}
+```
+
+Patch item construction to populate source files as:
+
+```text
+save_path + file.path
+```
+
+Important details:
+
+- If the torrent is a single file and file path equals the torrent name, source file should be `/save_path/name.ext`.
+- If the torrent is a folder, source files should be `/save_path/folder/file.ext`.
+- Preserve `ContentPath` for display/scanning fallback, but prefer explicit `SourceFiles` for import.
+- Remote path mapping should translate these source files from `/home/incertophile/...` to `/mnt/seedbox/...` in `DownloadClientGateway`.
+
+#### 7. Verify Deluge completion/status mapping
+
+Current Deluge state mapping was reviewed as plausible but still needs tests.
+
+Expected mapping:
+
+- `Seeding` + progress `100` => completed/import-eligible
+- `Finished` + progress `100` => completed/import-eligible, if emitted
+- `Paused` + progress `100` => completed/import-eligible
+- `Queued` + progress `100` => likely completed/import-eligible or completed-pending-seed
+- `Downloading` or `Downloading Metadata` => downloading
+- `Checking` => checking/downloading, not importable until complete/stable
+- `Error` => failed
+
+Add tests around `MapStatus`/`FetchDownloadsAsync` so Deluge does not repeat the Transmission seeding bug.
+
+#### 8. Validate Deluge removal/cleanup behavior but keep homelab cleanup safe
+
+For the first Deluge PR, full seed-limit cleanup behavior can be minimal, but these should not be broken:
+
+- Manual queue remove should pass the Deluge torrent hash, not the Listenarr UUID.
+- Completed Download Handling `none` should leave torrent/source files in Deluge.
+- Any `remove` / `remove_and_delete` behavior should call `core.remove_torrent(hash, deleteFiles)` with the correct hash.
+
+Homelab should continue using:
+
+```text
+removeCompletedDownloads=none
+```
+
+until import behavior is proven.
+
+#### 9. Add focused tests before building another GHCR image
+
+Minimum tests recommended before the next expensive image cycle:
+
+- Auto-selection chooses Deluge when it is the only enabled torrent client.
+- Auto-selection still chooses qBittorrent/Transmission according to intended preference when multiple clients are enabled.
+- Deluge label creation is attempted when category exists in settings and label is missing.
+- Deluge add stores returned torrent hash/id as `ClientDownloadId` and `TorrentHash`.
+- Deluge `FetchDownloadsAsync` matches DB download by stored external id/hash and marks `Seeding`/100% complete.
+- Deluge import item lookup finds the current item by hash and returns usable source files.
+- Remote path translation turns Deluge source files under `/home/incertophile/files/listenarr` into `/mnt/seedbox/files/listenarr`.
+- Queue/remove path uses Deluge hash rather than Listenarr UUID.
+
+### Homelab retest plan after patch/rebuild
+
+1. Deploy rebuilt integration image.
+2. Keep real Audiobooks library unmounted/unconfigured.
+3. Keep isolated Listenarr root only:
+   - `/data/media/test/listenarr_audiobooks`
+4. Keep `ultra-deluge` enabled.
+5. Keep `ultra-transmission` disabled to force Deluge.
+6. Confirm Deluge client test still returns `Deluge: connected to Web UI and daemon`.
+7. Confirm or create Deluge label `listenarr` before grabbing.
+8. Do one manual Listenarr/Prowlarr/MAM grab only after explicit user confirmation.
+9. Verify Deluge receives the torrent under:
+   - `/home/incertophile/files/listenarr`
+   - label/category `listenarr`
+10. Verify Listenarr queue/download DB tracks the torrent by hash.
+11. Verify completed/seeding Deluge item queues import automatically.
+12. Verify copied file appears under isolated root.
+13. Verify source file/torrent remains in Deluge because cleanup is `none`.
+
+### Do not regress already-proven Transmission behavior
+
+The current integration image successfully fixed Transmission completed/seeding import in homelab testing:
+
+- `Speaker for the Dead` completed on seedbox Transmission.
+- Listenarr detected `seeding` with `left=0` as complete.
+- Listenarr queued post-processing automatically.
+- Listenarr copied the file into the isolated test root without manual import.
+- Seedbox source torrent/file remained in place.
+
+Keep this behavior covered while patching Deluge.
