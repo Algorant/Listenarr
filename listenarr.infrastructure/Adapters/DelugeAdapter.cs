@@ -324,15 +324,24 @@ namespace Listenarr.Infrastructure.Adapters
             CanRemove = item.CanBeRemoved
         };
 
-        private static DownloadItemStatus MapStatus(string state, double progress) => state.ToLowerInvariant() switch
+        private static DownloadItemStatus MapStatus(string state, double progress)
         {
-            "paused" => DownloadItemStatus.Paused,
-            "downloading" => DownloadItemStatus.Downloading,
-            "seeding" or "finished" => DownloadItemStatus.Completed,
-            "error" => DownloadItemStatus.Failed,
-            "checking" or "queued" => DownloadItemStatus.Checking,
-            _ => progress >= 100 ? DownloadItemStatus.Completed : DownloadItemStatus.Unknown
-        };
+            var normalizedState = (state ?? string.Empty).Trim().ToLowerInvariant();
+            var payloadComplete = progress >= 100.0;
+
+            return normalizedState switch
+            {
+                "seeding" or "finished" => DownloadItemStatus.Completed,
+                "paused" when payloadComplete => DownloadItemStatus.Completed,
+                "paused" => DownloadItemStatus.Paused,
+                "queued" when payloadComplete => DownloadItemStatus.Completed,
+                "queued" => DownloadItemStatus.Queued,
+                "downloading" or "downloading metadata" => DownloadItemStatus.Downloading,
+                "error" => DownloadItemStatus.Failed,
+                "checking" => DownloadItemStatus.Checking,
+                _ => payloadComplete ? DownloadItemStatus.Completed : DownloadItemStatus.Unknown
+            };
+        }
 
         private static string BuildOutputPath(JsonElement t)
         {

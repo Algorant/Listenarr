@@ -27,7 +27,7 @@ This fork is currently preparing two upstreamable download-client changes plus o
 
 - [x] Document Deluge + Transmission roadmap in `origin/plan/deluge-transmission-roadmap`.
 - [ ] `fix/transmission-completed-seeding`: make completed/seeding Transmission torrents transition to completed/importable.
-- [ ] `feature/deluge-download-client-v2`: reapply Deluge Web JSON-RPC support onto current canary.
+- [x] `feature/deluge-download-client-v2`: reapply Deluge Web JSON-RPC support onto current canary.
 - [ ] `integration/deluge-plus-transmission`: combine both changes for homelab Docker testing.
 - [ ] Open focused upstream PRs against `canary` after validation.
 
