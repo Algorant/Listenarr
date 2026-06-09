@@ -21,6 +21,16 @@
 
 Listenarr is a fast, feature-rich, cross-platform audiobook management server. Built with a focus on being a complete solution for all your audiobook downloading needs. Set up your own server and get ready to streamline your audiobook listening!
 
+## Fork development checklist
+
+This fork is currently preparing two upstreamable download-client changes plus one private homelab integration branch.
+
+- [x] Document Deluge + Transmission roadmap in `origin/plan/deluge-transmission-roadmap`.
+- [ ] `fix/transmission-completed-seeding`: make completed/seeding Transmission torrents transition to completed/importable.
+- [ ] `feature/deluge-download-client-v2`: reapply Deluge Web JSON-RPC support onto current canary.
+- [ ] `integration/deluge-plus-transmission`: combine both changes for homelab Docker testing.
+- [ ] Open focused upstream PRs against `canary` after validation.
+
 <p align="center">
   <a href="https://github.com/Listenarrs/Listenarr/tree/canary/preview-images">
     <img src="preview-images/audiobooks.png" alt="Homepage">
