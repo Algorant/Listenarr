@@ -29,7 +29,10 @@ This fork is currently preparing two upstreamable download-client changes plus o
 - [x] `fix/transmission-completed-seeding`: make completed/seeding Transmission torrents transition to completed/importable.
 - [x] `feature/deluge-download-client-v2`: reapply Deluge Web JSON-RPC support onto current canary.
 - [x] `integration/deluge-plus-transmission`: combine both changes for homelab Docker testing.
-- [ ] Open focused upstream PRs against `canary` after validation.
+- [x] Local WSL -> Windows smoke test: Transmission completed/seeding public-domain torrent imported successfully.
+- [x] Local WSL -> Windows smoke test: Deluge Web JSON-RPC public-domain torrent imported successfully via isolated Deluge daemon/web config.
+- [x] Fix Deluge monitor/import matching to use the torrent external id instead of the Listenarr client id.
+- [ ] Open focused upstream PRs against `canary` after homelab/seedbox validation.
 
 <p align="center">
   <a href="https://github.com/Listenarrs/Listenarr/tree/canary/preview-images">
