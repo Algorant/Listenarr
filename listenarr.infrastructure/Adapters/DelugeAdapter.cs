@@ -44,7 +44,8 @@ namespace Listenarr.Infrastructure.Adapters
         private static readonly string[] StatusKeys =
         [
             "name", "total_size", "total_done", "progress", "download_payload_rate", "eta", "state",
-            "save_path", "label", "ratio", "num_seeds", "num_peers", "time_added", "files", "message"
+            "save_path", "label", "ratio", "num_seeds", "num_peers", "time_added", "files", "message",
+            "is_finished", "is_auto_managed", "stop_at_ratio", "stop_ratio"
         ];
 
         public DelugeAdapter(IHttpClientFactory httpClientFactory, ITorrentFileDownloader torrentFileDownloader, ILogger<DelugeAdapter> logger)
@@ -134,7 +135,17 @@ namespace Listenarr.Infrastructure.Adapters
 
             var category = GetSetting(client, "category");
             if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(category))
-                await TrySetLabelAsync(http, client, id, category, ct);
+            {
+                var labelSet = await TrySetLabelAsync(http, client, id, category, ct);
+                if (!labelSet)
+                {
+                    _logger.LogWarning(
+                        "Deluge torrent {TorrentId} was added but configured category/label {Label} could not be applied. " +
+                        "Tracked downloads are still matched by hash, but the general queue view may hide this torrent until the label exists.",
+                        LogRedaction.SanitizeText(id),
+                        LogRedaction.SanitizeText(category));
+                }
+            }
 
             return id;
         }
@@ -149,15 +160,76 @@ namespace Listenarr.Infrastructure.Adapters
         }
 
         public async Task<List<QueueItem>> GetQueueAsync(DownloadClientConfiguration client, CancellationToken ct = default)
-            => (await GetItemsAsync(client, ct)).Select(ToQueueItem).ToList();
+            => (await GetTorrentSnapshotsAsync(client, applyCategoryFilter: true, ct)).Select(s => s.ToQueueItem()).ToList();
 
         public async Task<List<DownloadClientItem>> GetItemsAsync(DownloadClientConfiguration client, CancellationToken ct = default)
+            => (await GetTorrentSnapshotsAsync(client, applyCategoryFilter: true, ct)).Select(s => s.Item).ToList();
+
+        public async Task<List<(string Id, string Name)>> GetRecentHistoryAsync(DownloadClientConfiguration client, int limit = 100, CancellationToken ct = default)
+            => (await GetItemsAsync(client, ct)).Where(i => i.Status == DownloadItemStatus.Completed).Take(limit).Select(i => (i.DownloadId, i.Title)).ToList();
+
+        public async Task<DownloadClientItem> GetImportItemAsync(DownloadClientConfiguration client, DownloadClientItem item, DownloadClientItem? previousAttempt = null, CancellationToken ct = default)
+        {
+            var current = (await GetTorrentSnapshotsAsync(client, applyCategoryFilter: false, ct))
+                .FirstOrDefault(i => string.Equals(i.Item.DownloadId, item.DownloadId, StringComparison.OrdinalIgnoreCase));
+            return current?.Item ?? item;
+        }
+
+        public async Task<QueueItem> GetImportItemAsync(DownloadClientConfiguration client, Download download, QueueItem queueItem, QueueItem? previousAttempt = null, CancellationToken ct = default)
+        {
+            var snapshots = await GetTorrentSnapshotsAsync(client, applyCategoryFilter: false, ct);
+            var current = FindSnapshotForDownload(download, queueItem, snapshots);
+            return current?.ToQueueItem() ?? queueItem;
+        }
+
+        public async Task<List<Download>> FetchDownloadsAsync(DownloadClientConfiguration client, List<Download> downloads, CancellationToken cancellationToken = default)
+        {
+            var snapshots = await GetTorrentSnapshotsAsync(client, applyCategoryFilter: false, cancellationToken);
+            foreach (var d in downloads)
+            {
+                var snapshot = FindSnapshotForDownload(d, null, snapshots);
+                if (snapshot == null)
+                {
+                    continue;
+                }
+
+                var item = snapshot.Item;
+                d.Progress = (decimal)item.Progress;
+                d.TotalSize = item.TotalSize;
+                d.DownloadedSize = Math.Max(0, item.TotalSize - item.RemainingSize);
+                d.DownloadPath = item.OutputPath;
+                d.Metadata ??= new Dictionary<string, object>();
+                d.Metadata["CanBeRemoved"] = item.CanBeRemoved;
+                d.Metadata["CanMoveFiles"] = item.CanMoveFiles;
+
+                if (d.Status is DownloadStatus.Moved or DownloadStatus.Processing or DownloadStatus.ImportPending)
+                    continue;
+                if (item.Status == DownloadItemStatus.Completed) d.Completed();
+                else if (item.Status == DownloadItemStatus.Failed) d.Status = DownloadStatus.Failed;
+                else if (item.Status == DownloadItemStatus.Paused) d.Status = DownloadStatus.Paused;
+                else d.Status = DownloadStatus.Downloading;
+            }
+            return downloads;
+        }
+
+        private async Task<List<DelugeTorrentSnapshot>> GetTorrentSnapshotsAsync(
+            DownloadClientConfiguration client,
+            bool applyCategoryFilter,
+            CancellationToken ct)
         {
             using var http = _httpClientFactory.CreateClient(ClientType);
             await AuthenticateAsync(http, client, ct);
             await EnsureDaemonConnectedAsync(http, client, ct);
             var res = await RpcAsync(http, client, "web.update_ui", [StatusKeys, new Dictionary<string, object>()], ct);
-            var list = new List<DownloadClientItem>();
+            return ParseTorrentSnapshots(client, res, applyCategoryFilter);
+        }
+
+        private static List<DelugeTorrentSnapshot> ParseTorrentSnapshots(
+            DownloadClientConfiguration client,
+            JsonElement res,
+            bool applyCategoryFilter)
+        {
+            var list = new List<DelugeTorrentSnapshot>();
             var configuredCategory = DownloadClientCategoryFilter.GetConfiguredCategory(client);
             if (!res.TryGetProperty("torrents", out var torrents) || torrents.ValueKind != JsonValueKind.Object) return list;
 
@@ -165,18 +237,24 @@ namespace Listenarr.Infrastructure.Adapters
             {
                 var t = torrent.Value;
                 var label = GetString(t, "label");
-                if (!DownloadClientCategoryFilter.Matches(configuredCategory, label)) continue;
+                if (applyCategoryFilter && !DownloadClientCategoryFilter.Matches(configuredCategory, label)) continue;
+
                 var total = GetLong(t, "total_size");
                 var done = GetLong(t, "total_done");
-                list.Add(new DownloadClientItem
+                var status = MapStatus(GetString(t, "state"), GetDouble(t, "progress"));
+                var removeCompletedDownloads = !string.IsNullOrWhiteSpace(client.RemoveCompletedDownloads) &&
+                    !string.Equals(client.RemoveCompletedDownloads, "none", StringComparison.OrdinalIgnoreCase);
+
+                var item = new DownloadClientItem
                 {
                     DownloadId = torrent.Name,
                     Title = GetString(t, "name"),
                     Category = label,
                     TotalSize = total,
                     RemainingSize = Math.Max(0, total - done),
+                    RemainingTime = BuildRemainingTime(t),
                     OutputPath = BuildOutputPath(t),
-                    Status = MapStatus(GetString(t, "state"), GetDouble(t, "progress")),
+                    Status = status,
                     Message = GetString(t, "message"),
                     Progress = GetDouble(t, "progress"),
                     DownloadSpeed = GetDouble(t, "download_payload_rate"),
@@ -184,54 +262,80 @@ namespace Listenarr.Infrastructure.Adapters
                     Seeders = (int)GetLong(t, "num_seeds"),
                     Leechers = (int)GetLong(t, "num_peers"),
                     AddedAt = FromUnix(GetDouble(t, "time_added")),
-                    CanBeRemoved = true,
+                    CanBeRemoved = removeCompletedDownloads && status == DownloadItemStatus.Completed,
                     CanMoveFiles = false,
-                    DownloadClientInfo = DownloadClientItemClientInfo.FromClient(client.Id, client.Name, client.Type, Protocol, client.RemoveCompletedDownloads != "none", false)
-                });
+                    DownloadClientInfo = DownloadClientItemClientInfo.FromClient(client.Id, client.Name, client.Type, DownloadProtocol.Torrent, removeCompletedDownloads, false)
+                };
+
+                list.Add(new DelugeTorrentSnapshot(item, BuildSourceFiles(t)));
             }
+
             return list;
         }
 
-        public async Task<List<(string Id, string Name)>> GetRecentHistoryAsync(DownloadClientConfiguration client, int limit = 100, CancellationToken ct = default)
-            => (await GetItemsAsync(client, ct)).Where(i => i.Status == DownloadItemStatus.Completed).Take(limit).Select(i => (i.DownloadId, i.Title)).ToList();
-
-        public async Task<DownloadClientItem> GetImportItemAsync(DownloadClientConfiguration client, DownloadClientItem item, DownloadClientItem? previousAttempt = null, CancellationToken ct = default)
+        private static DelugeTorrentSnapshot? FindSnapshotForDownload(
+            Download download,
+            QueueItem? queueItem,
+            IEnumerable<DelugeTorrentSnapshot> snapshots)
         {
-            var current = (await GetItemsAsync(client, ct)).FirstOrDefault(i => string.Equals(i.DownloadId, item.DownloadId, StringComparison.OrdinalIgnoreCase));
-            return current ?? item;
-        }
+            var snapshotList = snapshots.ToList();
+            var candidates = GetDownloadIdCandidates(download, queueItem).ToList();
 
-        public async Task<QueueItem> GetImportItemAsync(DownloadClientConfiguration client, Download download, QueueItem queueItem, QueueItem? previousAttempt = null, CancellationToken ct = default)
-        {
-            var externalId = download.GetExternalId();
-            var current = !string.IsNullOrWhiteSpace(externalId)
-                ? (await GetQueueAsync(client, ct)).FirstOrDefault(i => string.Equals(i.Id, externalId, StringComparison.OrdinalIgnoreCase))
-                : null;
-            return current ?? queueItem;
-        }
-
-        public async Task<List<Download>> FetchDownloadsAsync(DownloadClientConfiguration client, List<Download> downloads, CancellationToken cancellationToken = default)
-        {
-            var items = await GetItemsAsync(client, cancellationToken);
-            var byId = items.ToDictionary(i => i.DownloadId, StringComparer.OrdinalIgnoreCase);
-            foreach (var d in downloads)
+            foreach (var candidate in candidates)
             {
-                var externalId = d.GetExternalId();
-                if (!string.IsNullOrWhiteSpace(externalId) && byId.TryGetValue(externalId, out var item))
+                var match = snapshotList.FirstOrDefault(s => string.Equals(s.Item.DownloadId, candidate, StringComparison.OrdinalIgnoreCase));
+                if (match != null)
                 {
-                    d.Progress = (decimal)item.Progress;
-                    d.TotalSize = item.TotalSize;
-                    d.DownloadedSize = Math.Max(0, item.TotalSize - item.RemainingSize);
-                    d.DownloadPath = item.OutputPath;
-                    if (d.Status is DownloadStatus.Moved or DownloadStatus.Processing or DownloadStatus.ImportPending)
-                        continue;
-                    if (item.Status == DownloadItemStatus.Completed) d.Status = DownloadStatus.Completed;
-                    else if (item.Status == DownloadItemStatus.Failed) d.Status = DownloadStatus.Failed;
-                    else if (item.Status == DownloadItemStatus.Paused) d.Status = DownloadStatus.Paused;
-                    else d.Status = DownloadStatus.Downloading;
+                    return match;
                 }
             }
-            return downloads;
+
+            var titles = new[] { download.Title, queueItem?.Title }
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Select(t => t!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (titles.Count == 0)
+            {
+                return null;
+            }
+
+            var exactTitleMatches = snapshotList
+                .Where(s => titles.Any(t => string.Equals(s.Item.Title?.Trim(), t, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            return exactTitleMatches.Count == 1 ? exactTitleMatches[0] : null;
+        }
+
+        private static IEnumerable<string> GetDownloadIdCandidates(Download download, QueueItem? queueItem)
+        {
+            if (download == null)
+            {
+                yield break;
+            }
+
+            var values = new[]
+            {
+                download.GetExternalId(),
+                download.GetMetadataString("ClientDownloadId"),
+                download.GetMetadataString("TorrentHash"),
+                queueItem?.Id
+            };
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var value in values)
+            {
+                if (string.IsNullOrWhiteSpace(value) || string.Equals(value, download.Id, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (seen.Add(value))
+                {
+                    yield return value;
+                }
+            }
         }
 
         private static string BuildBaseUrl(DownloadClientConfiguration client)
@@ -300,35 +404,47 @@ namespace Listenarr.Infrastructure.Adapters
             return options;
         }
 
-        private async Task TrySetLabelAsync(HttpClient http, DownloadClientConfiguration client, string id, string label, CancellationToken ct)
+        private async Task<bool> TrySetLabelAsync(HttpClient http, DownloadClientConfiguration client, string id, string label, CancellationToken ct)
         {
-            try { await RpcAsync(http, client, "label.set_torrent", [id, label], ct); }
+            try
+            {
+                await EnsureLabelExistsAsync(http, client, label, ct);
+                await RpcAsync(http, client, "label.set_torrent", [id, label], ct);
+                return true;
+            }
             catch (Exception ex) when (ex is not OperationCanceledException && ex is not OutOfMemoryException && ex is not StackOverflowException)
-            { _logger.LogDebug(ex, "Unable to set Deluge label/category. Is the Label plugin enabled?"); }
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Unable to set Deluge label/category {Label} on torrent {TorrentId}. Is the Label plugin enabled?",
+                    LogRedaction.SanitizeText(label),
+                    LogRedaction.SanitizeText(id));
+                return false;
+            }
         }
 
-        private static QueueItem ToQueueItem(DownloadClientItem item) => new()
+        private async Task EnsureLabelExistsAsync(HttpClient http, DownloadClientConfiguration client, string label, CancellationToken ct)
         {
-            Id = item.DownloadId,
-            Title = item.Title,
-            Status = item.Status.ToString().ToLowerInvariant(),
-            Progress = item.Progress,
-            Size = item.TotalSize,
-            Downloaded = Math.Max(0, item.TotalSize - item.RemainingSize),
-            DownloadSpeed = item.DownloadSpeed,
-            Eta = item.RemainingTime.HasValue ? (int)item.RemainingTime.Value.TotalSeconds : null,
-            DownloadClient = item.DownloadClientInfo.Name,
-            DownloadClientId = item.DownloadClientInfo.Id,
-            DownloadClientType = item.DownloadClientInfo.Type,
-            AddedAt = item.AddedAt,
-            ErrorMessage = item.Message,
-            Seeders = item.Seeders,
-            Leechers = item.Leechers,
-            Ratio = item.SeedRatio,
-            RemotePath = item.OutputPath,
-            ContentPath = item.OutputPath,
-            CanRemove = item.CanBeRemoved
-        };
+            var labels = await RpcAsync(http, client, "label.get_labels", [], ct);
+            if (ContainsLabel(labels, label))
+            {
+                return;
+            }
+
+            await RpcAsync(http, client, "label.add", [label], ct);
+        }
+
+        private static bool ContainsLabel(JsonElement labels, string label)
+        {
+            if (labels.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            return labels.EnumerateArray()
+                .Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : null)
+                .Any(existing => string.Equals(existing, label, StringComparison.OrdinalIgnoreCase));
+        }
 
         private static DownloadItemStatus MapStatus(string state, double progress)
         {
@@ -351,11 +467,70 @@ namespace Listenarr.Infrastructure.Adapters
 
         private static string BuildOutputPath(JsonElement t)
         {
-            var savePath = GetString(t, "save_path").TrimEnd('/', '\\');
+            var savePath = GetString(t, "save_path");
             var name = GetString(t, "name");
             if (string.IsNullOrWhiteSpace(savePath)) return string.Empty;
-            return string.IsNullOrWhiteSpace(name) ? savePath : Path.Combine(savePath, name);
+            return string.IsNullOrWhiteSpace(name) ? savePath : CombineDelugePath(savePath, name);
         }
+
+        private static List<string> BuildSourceFiles(JsonElement t)
+        {
+            var savePath = GetString(t, "save_path");
+            if (string.IsNullOrWhiteSpace(savePath) || !t.TryGetProperty("files", out var files) || files.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            return files.EnumerateArray()
+                .Select(file => GetString(file, "path"))
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(path => CombineDelugePath(savePath, path))
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static string CombineDelugePath(string? basePath, string? candidatePath)
+        {
+            var candidate = (candidatePath ?? string.Empty).Trim().Replace('\\', '/');
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                return candidate;
+            }
+
+            if (candidate.StartsWith("/", StringComparison.Ordinal) || candidate.Contains(":/", StringComparison.Ordinal))
+            {
+                return candidate;
+            }
+
+            var normalizedBase = (basePath ?? string.Empty).TrimEnd('/', '\\');
+            if (string.IsNullOrWhiteSpace(normalizedBase))
+            {
+                return candidate.TrimStart('/', '\\');
+            }
+
+            return normalizedBase + "/" + candidate.TrimStart('/', '\\');
+        }
+
+        private static TimeSpan? BuildRemainingTime(JsonElement t)
+        {
+            var eta = GetLong(t, "eta");
+            if (eta < 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                return TimeSpan.FromSeconds(eta);
+            }
+            catch (OverflowException)
+            {
+                return TimeSpan.MaxValue;
+            }
+        }
+
+        private static string ToQueueStatus(DownloadItemStatus status) => status.ToString().ToLowerInvariant();
         private static string? GetSetting(DownloadClientConfiguration c, string key) => c.Settings != null && c.Settings.TryGetValue(key, out var v) ? v?.ToString() : null;
         private static string GetString(JsonElement e, string key) => e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
         private static long GetLong(JsonElement e, string key) => e.TryGetProperty(key, out var v) && v.TryGetInt64(out var l) ? l : 0;
@@ -365,5 +540,32 @@ namespace Listenarr.Infrastructure.Adapters
         private static string SanitizeTorrentFileName(string? title) => string.Join("_", (title ?? "listenarr").Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries)).Trim();
         private static string? TryExtractHashFromMagnet(string magnet) { var m = System.Text.RegularExpressions.Regex.Match(magnet, @"btih:([A-Fa-f0-9]{40})"); return m.Success ? m.Groups[1].Value.ToLowerInvariant() : null; }
         private static string? TryExtractAddedId(JsonElement res) => res.ValueKind == JsonValueKind.Array && res.GetArrayLength() > 0 ? res[0].GetString() : null;
+
+        private sealed record DelugeTorrentSnapshot(DownloadClientItem Item, List<string> SourceFiles)
+        {
+            public QueueItem ToQueueItem() => new()
+            {
+                Id = Item.DownloadId,
+                Title = Item.Title,
+                Status = ToQueueStatus(Item.Status),
+                Progress = Item.Progress,
+                Size = Item.TotalSize,
+                Downloaded = Math.Max(0, Item.TotalSize - Item.RemainingSize),
+                DownloadSpeed = Item.DownloadSpeed,
+                Eta = Item.RemainingTime.HasValue ? (int)Math.Min(int.MaxValue, Item.RemainingTime.Value.TotalSeconds) : null,
+                DownloadClient = Item.DownloadClientInfo.Name,
+                DownloadClientId = Item.DownloadClientInfo.Id,
+                DownloadClientType = Item.DownloadClientInfo.Type,
+                AddedAt = Item.AddedAt,
+                ErrorMessage = Item.Message,
+                Seeders = Item.Seeders,
+                Leechers = Item.Leechers,
+                Ratio = Item.SeedRatio,
+                RemotePath = Item.OutputPath,
+                ContentPath = Item.OutputPath,
+                SourceFiles = SourceFiles.Count > 0 ? new List<string>(SourceFiles) : null,
+                CanRemove = Item.CanBeRemoved
+            };
+        }
     }
 }

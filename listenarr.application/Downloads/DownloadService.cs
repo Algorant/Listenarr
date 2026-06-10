@@ -340,7 +340,7 @@ namespace Listenarr.Application.Downloads
                 if (downloadClientId == null)
                 {
                     var clientType = isTorrent ? "torrent" : "NZB";
-                    var neededClients = isTorrent ? "qBittorrent or Transmission" : "SABnzbd or NZBGet";
+                    var neededClients = isTorrent ? DownloadClientTypes.TorrentClientDisplayList : DownloadClientTypes.UsenetClientDisplayList;
                     throw new Exception($"No suitable download client found for {clientType}. Please configure and enable a {clientType} client ({neededClients}) in Settings.");
                 }
 
@@ -470,8 +470,7 @@ namespace Listenarr.Application.Downloads
 
                     downloadToUpdate.Metadata["ClientDownloadId"] = clientSpecificId;
 
-                    if (downloadClient.Type.Equals("qbittorrent", StringComparison.OrdinalIgnoreCase) ||
-                        downloadClient.Type.Equals("transmission", StringComparison.OrdinalIgnoreCase))
+                    if (DownloadClientTypes.IsTorrentHashClient(downloadClient.Type))
                     {
                         downloadToUpdate.Metadata["TorrentHash"] = clientSpecificId;
                     }
@@ -1171,9 +1170,8 @@ namespace Listenarr.Application.Downloads
 
             if (isTorrent)
             {
-                // Prefer qBittorrent, then Transmission
-                var client = enabledClients.FirstOrDefault(c => c.Type.Equals("qbittorrent", StringComparison.OrdinalIgnoreCase))
-                          ?? enabledClients.FirstOrDefault(c => c.Type.Equals("transmission", StringComparison.OrdinalIgnoreCase));
+                // Prefer qBittorrent, then Transmission, then Deluge.
+                var client = DownloadClientTypes.SelectPreferredTorrentClient(enabledClients);
 
                 if (client != null)
                 {
@@ -1181,16 +1179,15 @@ namespace Listenarr.Application.Downloads
                 }
                 else
                 {
-                    logger.LogWarning("No torrent client (qBittorrent or Transmission) found among enabled clients");
+                    logger.LogWarning("No torrent client ({TorrentClients}) found among enabled clients", DownloadClientTypes.TorrentClientDisplayList);
                 }
 
                 return client?.Id;
             }
             else
             {
-                // Prefer SABnzbd, then NZBGet
-                var client = enabledClients.FirstOrDefault(c => c.Type.Equals("sabnzbd", StringComparison.OrdinalIgnoreCase))
-                          ?? enabledClients.FirstOrDefault(c => c.Type.Equals("nzbget", StringComparison.OrdinalIgnoreCase));
+                // Prefer SABnzbd, then NZBGet.
+                var client = DownloadClientTypes.SelectPreferredUsenetClient(enabledClients);
 
                 if (client != null)
                 {
@@ -1474,8 +1471,7 @@ namespace Listenarr.Application.Downloads
                 var clientItemId = downloadId;
                 if (downloadRecord?.Metadata != null)
                 {
-                    if ((string.Equals(client.Type, "qbittorrent", StringComparison.OrdinalIgnoreCase) ||
-                         string.Equals(client.Type, "transmission", StringComparison.OrdinalIgnoreCase)) &&
+                    if (DownloadClientTypes.IsTorrentHashClient(client.Type) &&
                         downloadRecord.Metadata.TryGetValue("TorrentHash", out var hashObj))
                     {
                         var hash = hashObj?.ToString();
@@ -1515,7 +1511,7 @@ namespace Listenarr.Application.Downloads
                         try
                         {
                             var queue = await clientGateway.GetQueueAsync(client);
-                            var stillExists = queue.Any(q => q.Id.Equals(downloadId, StringComparison.OrdinalIgnoreCase));
+                            var stillExists = queue.Any(q => q.Id.Equals(clientItemId, StringComparison.OrdinalIgnoreCase) || q.Id.Equals(downloadId, StringComparison.OrdinalIgnoreCase));
 
                             if (!stillExists)
                             {
@@ -1541,7 +1537,7 @@ namespace Listenarr.Application.Downloads
                         try
                         {
                             var queue = await clientGateway.GetQueueAsync(client);
-                            var stillExists = queue.Any(q => q.Id.Equals(downloadId, StringComparison.OrdinalIgnoreCase));
+                            var stillExists = queue.Any(q => q.Id.Equals(clientItemId, StringComparison.OrdinalIgnoreCase) || q.Id.Equals(downloadId, StringComparison.OrdinalIgnoreCase));
 
                             if (!stillExists)
                             {

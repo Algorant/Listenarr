@@ -25,6 +25,7 @@ using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using System.Text;
 using Listenarr.Domain.Common;
+using Listenarr.Application.Downloads;
 using Listenarr.Application.Interfaces;
 using Listenarr.Domain.Models.Configurations;
 using Listenarr.Application.Interfaces.Repositories;
@@ -3352,9 +3353,8 @@ namespace Listenarr.Api.Controllers
 
             if (isTorrent)
             {
-                // Prefer qBittorrent, then Transmission
-                var client = enabledClients.FirstOrDefault(c => c.Type.Equals("qbittorrent", StringComparison.OrdinalIgnoreCase))
-                          ?? enabledClients.FirstOrDefault(c => c.Type.Equals("transmission", StringComparison.OrdinalIgnoreCase));
+                // Prefer qBittorrent, then Transmission, then Deluge.
+                var client = DownloadClientTypes.SelectPreferredTorrentClient(enabledClients);
 
                 if (client != null)
                 {
@@ -3362,16 +3362,15 @@ namespace Listenarr.Api.Controllers
                 }
                 else
                 {
-                    _logger.LogWarning("No torrent client (qBittorrent or Transmission) found among enabled clients");
+                    _logger.LogWarning("No torrent client ({TorrentClients}) found among enabled clients", DownloadClientTypes.TorrentClientDisplayList);
                 }
 
                 return client?.Id ?? string.Empty;
             }
             else
             {
-                // Prefer SABnzbd, then NZBGet
-                var client = enabledClients.FirstOrDefault(c => c.Type.Equals("sabnzbd", StringComparison.OrdinalIgnoreCase))
-                          ?? enabledClients.FirstOrDefault(c => c.Type.Equals("nzbget", StringComparison.OrdinalIgnoreCase));
+                // Prefer SABnzbd, then NZBGet.
+                var client = DownloadClientTypes.SelectPreferredUsenetClient(enabledClients);
 
                 if (client != null)
                 {

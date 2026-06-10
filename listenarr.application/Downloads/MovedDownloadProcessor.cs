@@ -245,10 +245,8 @@ namespace Listenarr.Application.Downloads
                     // download was recorded under the wrong DownloadClientId.
                     if (!removed && !string.IsNullOrEmpty(torrentHash))
                     {
-                        var torrentClientTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                            { "qbittorrent", "transmission" };
                         var otherTorrentClients = allEnabledClients
-                            .Where(c => torrentClientTypes.Contains(c.Type ?? "") &&
+                            .Where(c => DownloadClientTypes.IsTorrentClient(c.Type) &&
                                         c.Id != download.DownloadClientId)
                             .ToList();
 

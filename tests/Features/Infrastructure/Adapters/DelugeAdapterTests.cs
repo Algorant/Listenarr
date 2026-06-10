@@ -144,6 +144,78 @@ namespace Listenarr.Tests.Features.Infrastructure.Adapters
         }
 
         [Fact]
+        public async Task FetchDownloadsAsync_MatchesTrackedDownloadsEvenWhenConfiguredCategoryDoesNotMatch()
+        {
+            var adapter = CreateAdapter(BuildUpdateUiResponse("Seeding", 100.0, "unlabeled"));
+            var client = CreateClient(category: "listenarr");
+            var download = new Download
+            {
+                Id = "listenarr-download-1",
+                DownloadClientId = client.Id,
+                Status = DownloadStatus.Downloading
+            };
+            download.Metadata["TorrentHash"] = "ABCDEF1234567890";
+
+            var updated = await adapter.FetchDownloadsAsync(client, [download], CancellationToken.None);
+
+            Assert.Single(updated);
+            Assert.Equal(DownloadStatus.Completed, updated[0].Status);
+            Assert.Equal("/downloads/Book.m4b", updated[0].DownloadPath);
+        }
+
+        [Fact]
+        public async Task GetQueueAsync_PopulatesSourceFilesFromDelugeFileMetadata()
+        {
+            var adapter = CreateAdapter(BuildUpdateUiResponseWithFiles(label: "listenarr"));
+            var client = CreateClient(category: "listenarr");
+
+            var queue = await adapter.GetQueueAsync(client, CancellationToken.None);
+
+            var item = Assert.Single(queue);
+            Assert.Equal("ABCDEF1234567890", item.Id);
+            Assert.Equal("/downloads/Book Folder", item.ContentPath);
+            Assert.Equal(
+                new[]
+                {
+                    "/downloads/Book Folder/Book.m4b",
+                    "/downloads/Book Folder/Bonus/Interview.mp3"
+                },
+                item.SourceFiles);
+        }
+
+        [Fact]
+        public async Task GetImportItemAsync_MatchesByTorrentHashAndReturnsSourceFiles()
+        {
+            var adapter = CreateAdapter(BuildUpdateUiResponseWithFiles(label: "unlabeled"));
+            var client = CreateClient(category: "listenarr");
+            var download = new Download
+            {
+                Id = "listenarr-download-1",
+                DownloadClientId = client.Id,
+                Title = "Fallback"
+            };
+            download.Metadata["TorrentHash"] = "ABCDEF1234567890";
+            var fallback = new QueueItem
+            {
+                Id = "listenarr-download-1",
+                Title = "Fallback"
+            };
+
+            var item = await adapter.GetImportItemAsync(client, download, fallback, null, CancellationToken.None);
+
+            Assert.Equal("ABCDEF1234567890", item.Id);
+            Assert.Equal("Book Folder", item.Title);
+            Assert.Equal("completed", item.Status);
+            Assert.Equal(
+                new[]
+                {
+                    "/downloads/Book Folder/Book.m4b",
+                    "/downloads/Book Folder/Bonus/Interview.mp3"
+                },
+                item.SourceFiles);
+        }
+
+        [Fact]
         public async Task GetImportItemAsync_MatchesQueueItemByExternalClientId()
         {
             var adapter = CreateAdapter(BuildUpdateUiResponse("Seeding", 100.0, "listenarr"));
@@ -165,6 +237,27 @@ namespace Listenarr.Tests.Features.Infrastructure.Adapters
             Assert.Equal("ABCDEF1234567890", item.Id);
             Assert.Equal("Book.m4b", item.Title);
             Assert.Equal("completed", item.Status);
+        }
+
+        [Fact]
+        public async Task AddAsync_CreatesMissingLabelBeforeAssigningConfiguredCategory()
+        {
+            var calls = new List<string>();
+            var adapter = CreateAddAdapter(calls, existingLabelsJson: "[\"movies\"]");
+            var client = CreateClient(category: "listenarr");
+            var result = new SearchResult
+            {
+                Title = "Book",
+                TorrentFileContent = [1, 2, 3]
+            };
+
+            var id = await adapter.AddAsync(client, result, CancellationToken.None);
+
+            Assert.Equal("ABCDEF1234567890", id);
+            Assert.Contains("label.get_labels", calls);
+            Assert.Contains("label.add", calls);
+            Assert.Contains("label.set_torrent", calls);
+            Assert.True(calls.IndexOf("label.add") < calls.IndexOf("label.set_torrent"));
         }
 
         [Fact]
@@ -232,6 +325,46 @@ namespace Listenarr.Tests.Features.Infrastructure.Adapters
             return new DelugeAdapter(httpFactory.Object, Mock.Of<ITorrentFileDownloader>(), NullLogger<DelugeAdapter>.Instance);
         }
 
+        private static DelugeAdapter CreateAddAdapter(List<string> calls, string existingLabelsJson)
+        {
+            var handler = new DelegatingHandlerMock(async (request, ct) =>
+            {
+                var body = await request.Content!.ReadAsStringAsync(ct);
+                using var document = JsonDocument.Parse(body);
+                var method = document.RootElement.GetProperty("method").GetString() ?? string.Empty;
+                calls.Add(method);
+
+                var responseBody = method switch
+                {
+                    "auth.login" => BuildRpcResult("true"),
+                    "web.connected" => BuildRpcResult("true"),
+                    "core.add_torrent_file" => BuildRpcResult("\"ABCDEF1234567890\""),
+                    "label.get_labels" => BuildRpcResult(existingLabelsJson),
+                    "label.add" => BuildRpcResult("null"),
+                    "label.set_torrent" => BuildRpcResult("null"),
+                    _ => BuildRpcResult("null")
+                };
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(responseBody, Encoding.UTF8, "application/json")
+                };
+            });
+            var httpFactory = new Mock<IHttpClientFactory>();
+            httpFactory.Setup(f => f.CreateClient(It.IsAny<string>())).Returns(new HttpClient(handler));
+
+            return new DelugeAdapter(httpFactory.Object, Mock.Of<ITorrentFileDownloader>(), NullLogger<DelugeAdapter>.Instance);
+        }
+
+        private static string BuildRpcResult(string resultJson)
+            => $$"""
+            {
+              "id":1,
+              "result":{{resultJson}},
+              "error":null
+            }
+            """;
+
         private static DownloadClientConfiguration CreateClient(string? category)
         {
             var client = new DownloadClientConfiguration
@@ -276,6 +409,38 @@ namespace Listenarr.Tests.Features.Infrastructure.Adapters
                     "num_peers":0,
                     "time_added":1700000000,
                     "message":""
+                  }
+                }
+              },
+              "error":null
+            }
+            """;
+
+        private static string BuildUpdateUiResponseWithFiles(string label)
+            => $$"""
+            {
+              "id":1,
+              "result":{
+                "torrents":{
+                  "ABCDEF1234567890":{
+                    "name":"Book Folder",
+                    "total_size":300,
+                    "total_done":300,
+                    "progress":100.0,
+                    "download_payload_rate":0,
+                    "eta":0,
+                    "state":"Seeding",
+                    "save_path":"/downloads",
+                    "label":"{{label}}",
+                    "ratio":1.0,
+                    "num_seeds":1,
+                    "num_peers":0,
+                    "time_added":1700000000,
+                    "message":"",
+                    "files":[
+                      { "index":0, "path":"Book Folder/Book.m4b", "offset":0, "size":200 },
+                      { "index":1, "path":"Book Folder/Bonus/Interview.mp3", "offset":200, "size":100 }
+                    ]
                   }
                 }
               },

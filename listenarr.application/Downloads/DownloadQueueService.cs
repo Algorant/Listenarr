@@ -743,8 +743,7 @@ namespace Listenarr.Application.Downloads
 
             allKnownClientItemIds.Add(originalClientId);
 
-            if (string.Equals(client.Type, "qbittorrent", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(client.Type, "transmission", StringComparison.OrdinalIgnoreCase))
+            if (DownloadClientTypes.IsTorrentHashClient(client.Type))
             {
                 var existingTorrentHash = GetMetadataString(matchedDownload.Metadata, "TorrentHash");
                 if (!string.Equals(existingTorrentHash, originalClientId, StringComparison.OrdinalIgnoreCase))

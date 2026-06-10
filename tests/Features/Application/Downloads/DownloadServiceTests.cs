@@ -99,6 +99,117 @@ namespace Listenarr.Tests.Features.Application.Downloads
         }
 
         [Fact]
+        public async Task SendToDownloadClientAsync_AutoSelectsDeluge_WhenItIsOnlyEnabledTorrentClient()
+        {
+            var gatewayMock = new Mock<IDownloadClientGateway>();
+            _services.AddSingleton(gatewayMock.Object);
+
+            Init();
+            await InitData();
+
+            _client.IsEnabled = false;
+            await _downloadClientConfigurationRepository.SaveAsync(_client);
+
+            var delugeClient = await _downloadClientConfigurationRepository.SaveAsync(new DownloadClientConfiguration
+            {
+                Id = "deluge-1",
+                Name = "Deluge",
+                Type = "deluge",
+                Host = "localhost",
+                Port = 8112,
+                IsEnabled = true
+            });
+
+            gatewayMock
+                .Setup(g => g.AddAsync(
+                    It.Is<DownloadClientConfiguration>(c => c.Id == delugeClient.Id),
+                    It.IsAny<SearchResult>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync("DELUGEHASH1234567890");
+
+            var downloadService = _provider.GetRequiredService<DownloadService>();
+
+            var searchResult = new SearchResult
+            {
+                Title = "Artemis",
+                Artist = "Andy Weir",
+                DownloadType = "Torrent",
+                MagnetLink = "magnet:?xt=urn:btih:DELUGEHASH1234567890&dn=Artemis",
+                Size = 123456789
+            };
+
+            var downloadId = await downloadService.SendToDownloadClientAsync(searchResult);
+            var persisted = await _downloadRepository.GetByIdAsync(downloadId);
+
+            Assert.NotNull(persisted);
+            Assert.Equal("deluge-1", persisted!.DownloadClientId);
+            Assert.Equal("DELUGEHASH1234567890", persisted.Metadata["ClientDownloadId"]?.ToString());
+            Assert.Equal("DELUGEHASH1234567890", persisted.Metadata["TorrentHash"]?.ToString());
+            gatewayMock.Verify(
+                g => g.AddAsync(
+                    It.Is<DownloadClientConfiguration>(c => c.Id == delugeClient.Id),
+                    It.Is<SearchResult>(r => r.DownloadType == "Torrent"),
+                    It.IsAny<CancellationToken>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task RemoveFromQueueAsync_UsesTorrentHashForDelugeRemoval()
+        {
+            var gatewayMock = new Mock<IDownloadClientGateway>();
+            _services.AddSingleton(gatewayMock.Object);
+
+            Init();
+            await InitData();
+
+            var delugeClient = await _downloadClientConfigurationRepository.SaveAsync(new DownloadClientConfiguration
+            {
+                Id = "deluge-1",
+                Name = "Deluge",
+                Type = "deluge",
+                Host = "localhost",
+                Port = 8112,
+                IsEnabled = true
+            });
+
+            var download = new Download
+            {
+                Id = "download-deluge-remove",
+                DownloadClientId = delugeClient.Id,
+                Title = "Deluge Book",
+                Status = DownloadStatus.Downloading,
+                Metadata = new Dictionary<string, object>
+                {
+                    ["TorrentHash"] = "DELUGEHASH-REMOVE",
+                    ["ClientDownloadId"] = "DELUGEHASH-REMOVE"
+                }
+            };
+            await _downloadRepository.AddAsync(download);
+
+            gatewayMock
+                .Setup(g => g.RemoveAsync(
+                    It.Is<DownloadClientConfiguration>(c => c.Id == delugeClient.Id),
+                    "DELUGEHASH-REMOVE",
+                    false,
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(true);
+
+            var downloadService = _provider.GetRequiredService<DownloadService>();
+
+            var removed = await downloadService.RemoveFromQueueAsync(download.Id, delugeClient.Id);
+
+            Assert.True(removed);
+            gatewayMock.Verify(
+                g => g.RemoveAsync(
+                    It.Is<DownloadClientConfiguration>(c => c.Id == delugeClient.Id),
+                    "DELUGEHASH-REMOVE",
+                    false,
+                    It.IsAny<CancellationToken>()),
+                Times.Once);
+            Assert.Null(await _downloadRepository.GetByIdAsync(download.Id));
+        }
+
+        [Fact]
         public async Task SendToDownloadClientAsync_DerivesTorrent_WhenRequestSpoofsDdl()
         {
             var gatewayMock = new Mock<IDownloadClientGateway>();

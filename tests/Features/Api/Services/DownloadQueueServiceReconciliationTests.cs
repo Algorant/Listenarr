@@ -713,6 +713,82 @@ namespace Listenarr.Tests.Features.Api.Services
             downloadRepoMock.Verify(r => r.UpdateMetadataAsync("tracked-artemis", "TorrentHash", "HASH-ARTEMIS"), Times.Once);
         }
 
+        [Fact]
+        [Trait("Scenario", "DelugeTorrentHashPersistence")]
+        public async Task GetQueueAsync_PersistsTorrentHashForDelugeQueueItems()
+        {
+            var client = new DownloadClientConfiguration
+            {
+                Id = "deluge-1",
+                Name = "seedbox deluge",
+                Type = "deluge",
+                IsEnabled = true
+            };
+
+            var configMock = new Mock<IConfigurationService>();
+            configMock.Setup(c => c.GetDownloadClientConfigurationsAsync())
+                .ReturnsAsync(new List<DownloadClientConfiguration> { client });
+            configMock.Setup(c => c.GetApplicationSettingsAsync())
+                .ReturnsAsync(new ApplicationSettings { ShowCompletedExternalDownloads = true });
+
+            var trackedDownload = new Download
+            {
+                Id = "tracked-deluge-book",
+                DownloadClientId = "deluge-1",
+                Title = "Deluge Book",
+                Status = DownloadStatus.Downloading,
+                StartedAt = DateTime.UtcNow.AddMinutes(-20)
+            };
+
+            var persistedMetadata = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            var downloadRepoMock = new Mock<IDownloadRepository>();
+            SetupQueueRepository(downloadRepoMock, new List<Download> { trackedDownload });
+            downloadRepoMock
+                .Setup(r => r.UpdateMetadataAsync("tracked-deluge-book", It.IsAny<string>(), It.IsAny<object?>()))
+                .Callback<string, string, object?>((_, key, value) => persistedMetadata[key] = value)
+                .Returns(Task.CompletedTask);
+
+            var processingJobRepoMock = new Mock<IDownloadProcessingJobRepository>();
+            processingJobRepoMock.Setup(r => r.GetPendingDownloadIdsAsync(It.IsAny<IEnumerable<string>>())).ReturnsAsync(new List<string>());
+            processingJobRepoMock.Setup(r => r.GetAllJobDownloadIdsAsync(It.IsAny<IEnumerable<string>>())).ReturnsAsync(new List<string>());
+
+            var gatewayMock = new Mock<IDownloadClientGateway>();
+            gatewayMock.Setup(g => g.GetQueueAsync(client, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new List<QueueItem>
+                {
+                    new QueueItem
+                    {
+                        Id = "DELUGEHASH-BOOK",
+                        Title = "Deluge Book",
+                        Status = "downloading",
+                        Progress = 50,
+                        DownloadClient = "seedbox deluge",
+                        DownloadClientId = "deluge-1",
+                        DownloadClientType = "deluge",
+                        AddedAt = DateTime.UtcNow.AddHours(-2)
+                    }
+                });
+
+            var metricsMock = new Mock<IAppMetricsService>();
+            var service = CreateService(
+                configMock.Object,
+                downloadRepoMock.Object,
+                processingJobRepoMock.Object,
+                gatewayMock.Object,
+                metricsMock.Object);
+
+            var result = await service.GetQueueAsync();
+
+            Assert.Single(result);
+            Assert.Equal("tracked-deluge-book", result[0].Id);
+            Assert.Equal("DELUGEHASH-BOOK", trackedDownload.Metadata?["ClientDownloadId"]?.ToString());
+            Assert.Equal("DELUGEHASH-BOOK", trackedDownload.Metadata?["TorrentHash"]?.ToString());
+            Assert.Equal("DELUGEHASH-BOOK", persistedMetadata["ClientDownloadId"]?.ToString());
+            Assert.Equal("DELUGEHASH-BOOK", persistedMetadata["TorrentHash"]?.ToString());
+            downloadRepoMock.Verify(r => r.UpdateMetadataAsync("tracked-deluge-book", "ClientDownloadId", "DELUGEHASH-BOOK"), Times.Once);
+            downloadRepoMock.Verify(r => r.UpdateMetadataAsync("tracked-deluge-book", "TorrentHash", "DELUGEHASH-BOOK"), Times.Once);
+        }
+
         private static bool IsQueueDisplayCandidate(Download d)
         {
             bool isDdl = d.DownloadClientId == "DDL";
