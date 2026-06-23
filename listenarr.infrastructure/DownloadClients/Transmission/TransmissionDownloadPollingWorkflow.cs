@@ -209,6 +209,7 @@ namespace Listenarr.Infrastructure.DownloadClients.Transmission
                             var percent = matching.TryGetProperty("percentDone", out var p) ? p.GetDouble() : 0.0;
                             var left = matching.TryGetProperty("leftUntilDone", out var l) ? l.GetInt64() : 0L;
                             var statusCode = matching.TryGetProperty("status", out var statusProp) ? statusProp.GetInt32() : 0;
+                            var isFinished = matching.TryGetProperty("isFinished", out var finishedProp) && finishedProp.GetBoolean();
 
                             var status = statusCode switch
                             {
@@ -262,8 +263,18 @@ namespace Listenarr.Infrastructure.DownloadClients.Transmission
                                 continue;
                             }
 
-                            var isComplete = percent >= 1.0 && (status == "seeding" || status == "queued" || status == "paused");
-                            _logger.LogInformation("PollTransmission download {DownloadId}: percent={Percent}, status={Status}, isComplete={IsComplete}", dl.Id, percent, status, isComplete);
+                            // Transmission can report fully downloaded torrents as still seeding.
+                            // Mark completed-side payloads importable while preserving the existing
+                            // seed-limit/removal metadata flow above.
+                            var payloadComplete = percent >= 1.0 || left <= 0 || isFinished;
+                            var isCompleteSideState = statusCode is 0 or 5 or 6 || isFinished;
+                            var isComplete = payloadComplete && isCompleteSideState;
+                            if (isComplete)
+                            {
+                                dl.Completed();
+                            }
+
+                            _logger.LogInformation("PollTransmission download {DownloadId}: percent={Percent}, left={Left}, status={Status}, isFinished={IsFinished}, isComplete={IsComplete}", dl.Id, percent, left, status, isFinished, isComplete);
                         }
                         catch (Exception ex) when (ex is not OperationCanceledException && ex is not OutOfMemoryException && ex is not StackOverflowException)
                         {
