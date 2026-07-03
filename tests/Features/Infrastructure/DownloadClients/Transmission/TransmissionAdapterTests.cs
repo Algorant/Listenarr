@@ -290,10 +290,35 @@ namespace Listenarr.Tests.Features.Infrastructure.DownloadClients.Transmission
         [InlineData(3)]
         [InlineData(5)]
         [InlineData(6)]
-        public void CompletedTorrentStates_MapToCompleted(int status)
+        public void CompletedTorrentStates_WithReliableTelemetry_MapToCompleted(int status)
         {
-            Assert.Equal(DownloadItemStatus.Completed, TransmissionResponseMapper.MapDownloadItemStatus(status, 100));
-            Assert.Equal("completed", TransmissionResponseMapper.MapQueueStatus(status, 100));
+            Assert.Equal(DownloadItemStatus.Completed, TransmissionResponseMapper.MapDownloadItemStatus(status, 100, 1024, 0));
+            Assert.Equal("completed", TransmissionResponseMapper.MapQueueStatus(status, 100, 1024, 0));
+        }
+
+        [Fact]
+        public void SeedingTorrent_WithPositiveSizeAndNoBytesRemaining_MapsToCompleted()
+        {
+            Assert.Equal(DownloadItemStatus.Completed, TransmissionResponseMapper.MapDownloadItemStatus(6, 99.9, 1024, 0));
+            Assert.Equal("completed", TransmissionResponseMapper.MapQueueStatus(6, 99.9, 1024, 0));
+        }
+
+        [Theory]
+        [InlineData(2, 100, 1024, 0, DownloadItemStatus.Downloading, "downloading")]
+        [InlineData(4, 100, 1024, 0, DownloadItemStatus.Downloading, "downloading")]
+        [InlineData(6, 100, 0, 0, DownloadItemStatus.Downloading, "seeding")]
+        [InlineData(0, 100, 0, 0, DownloadItemStatus.Paused, "paused")]
+        [InlineData(6, 99.9, 1024, 1, DownloadItemStatus.Downloading, "seeding")]
+        public void TransmissionCompletionMapping_RequiresCompletedStateAndReliablePositiveSizeTelemetry(
+            int status,
+            double percentDone,
+            long totalSize,
+            long leftUntilDone,
+            DownloadItemStatus expectedItemStatus,
+            string expectedQueueStatus)
+        {
+            Assert.Equal(expectedItemStatus, TransmissionResponseMapper.MapDownloadItemStatus(status, percentDone, totalSize, leftUntilDone));
+            Assert.Equal(expectedQueueStatus, TransmissionResponseMapper.MapQueueStatus(status, percentDone, totalSize, leftUntilDone));
         }
     }
 }
