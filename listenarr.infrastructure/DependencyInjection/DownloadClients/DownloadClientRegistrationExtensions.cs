@@ -37,6 +37,7 @@ internal static class DownloadClientRegistrationExtensions
 
         AddAdapterClient(services, DownloadClientTypes.Qbittorrent, useCookies: true, retryPolicy, circuitBreakerPolicy);
         AddAdapterClient(services, DownloadClientTypes.Transmission, useCookies: false, retryPolicy, circuitBreakerPolicy);
+        AddAdapterClient(services, DownloadClientTypes.Deluge, useCookies: true, retryPolicy, circuitBreakerPolicy);
         AddAdapterClient(services, DownloadClientTypes.Sabnzbd, useCookies: false, retryPolicy, circuitBreakerPolicy);
         AddAdapterClient(services, DownloadClientTypes.Nzbget, useCookies: false, retryPolicy, circuitBreakerPolicy);
         return services;
@@ -56,6 +57,7 @@ internal static class DownloadClientRegistrationExtensions
 
         services.AddQbittorrentWorkflows();
         services.AddTransmissionWorkflows();
+        services.AddDelugeWorkflows();
         services.AddSabnzbdWorkflows();
         services.AddNzbgetWorkflows();
 
@@ -74,6 +76,13 @@ internal static class DownloadClientRegistrationExtensions
             sp.GetRequiredService<TransmissionQueueFetchWorkflow>(),
             sp.GetRequiredService<TransmissionItemFetchWorkflow>(),
             sp.GetRequiredService<TransmissionImportItemResolver>()));
+        services.AddScoped<IDownloadClientAdapter>(sp => new DelugeAdapter(
+            sp.GetRequiredService<DelugeConnectionTester>(),
+            sp.GetRequiredService<DelugeAddWorkflow>(),
+            sp.GetRequiredService<DelugeRemovalWorkflow>(),
+            sp.GetRequiredService<DelugeQueueFetchWorkflow>(),
+            sp.GetRequiredService<DelugeItemFetchWorkflow>(),
+            sp.GetRequiredService<DelugeImportItemResolver>()));
         services.AddScoped<IDownloadClientAdapter>(sp => new SabnzbdAdapter(
             sp.GetRequiredService<SabnzbdConnectionTester>(),
             sp.GetRequiredService<SabnzbdAddWorkflow>(),
@@ -168,6 +177,38 @@ internal static class DownloadClientRegistrationExtensions
             new TransmissionImportItemResolver(
                 sp.GetRequiredService<TransmissionRpcClient>(),
                 sp.GetRequiredService<ILogger<TransmissionAdapter>>()));
+        return services;
+    }
+
+    private static IServiceCollection AddDelugeWorkflows(this IServiceCollection services)
+    {
+        services.AddScoped<DelugeRpcClient>(sp =>
+            new DelugeRpcClient(
+                sp.GetRequiredService<IHttpClientFactory>(),
+                DownloadClientTypes.Deluge,
+                sp.GetRequiredService<ILogger<DelugeAdapter>>()));
+        services.AddScoped<DelugeConnectionTester>(sp =>
+            new DelugeConnectionTester(
+                sp.GetRequiredService<DelugeRpcClient>(),
+                sp.GetRequiredService<ILogger<DelugeAdapter>>()));
+        services.AddScoped<DelugeAddWorkflow>(sp =>
+            new DelugeAddWorkflow(
+                sp.GetRequiredService<DelugeRpcClient>(),
+                sp.GetRequiredService<ILogger<DelugeAdapter>>()));
+        services.AddScoped<DelugeRemovalWorkflow>(sp =>
+            new DelugeRemovalWorkflow(sp.GetRequiredService<DelugeRpcClient>()));
+        services.AddScoped<DelugeQueueFetchWorkflow>(sp =>
+            new DelugeQueueFetchWorkflow(
+                sp.GetRequiredService<DelugeRpcClient>(),
+                sp.GetRequiredService<ILogger<DelugeAdapter>>()));
+        services.AddScoped<DelugeItemFetchWorkflow>(sp =>
+            new DelugeItemFetchWorkflow(
+                sp.GetRequiredService<DelugeRpcClient>(),
+                sp.GetRequiredService<ILogger<DelugeAdapter>>()));
+        services.AddScoped<DelugeImportItemResolver>(sp =>
+            new DelugeImportItemResolver(
+                sp.GetRequiredService<DelugeRpcClient>(),
+                sp.GetRequiredService<ILogger<DelugeAdapter>>()));
         return services;
     }
 

@@ -99,7 +99,7 @@ Background workers expose DI-facing processor contracts for deterministic cycle/
 
 `DownloadQueueService` fetches full live client queue snapshots for reconciliation, rebinding, stale-snapshot reporting, and completed-external display. That full snapshot is an internal input, not the user-visible Activity contract.
 
-The user-facing Activity queue should expose Listenarr-owned active downloads only. Each active external queue item must first match a Listenarr download by stored ID, client-specific ID, torrent hash, or a safe non-ambiguous title/artist fallback before it is shown. Unmatched active external items from shared clients such as Transmission, qBittorrent, SABnzbd, or NZBGet must be hidden from Activity so unrelated user transfers do not appear as Listenarr work.
+The user-facing Activity queue should expose Listenarr-owned active downloads only. Each active external queue item must first match a Listenarr download by stored ID, client-specific ID, torrent hash, or a safe non-ambiguous title/artist fallback before it is shown. Unmatched active external items from shared clients such as Transmission, qBittorrent, Deluge, SABnzbd, or NZBGet must be hidden from Activity so unrelated user transfers do not appear as Listenarr work.
 
 Unmatched completed external items are a separate opt-in display feature and may be shown only by the completed-external display path when `ShowCompletedExternalDownloads` is enabled. Do not use that setting to expose unmatched active external items.
 
@@ -121,9 +121,9 @@ Use this shape for every supported client:
 - `<Client>ResponseMapper` should stay focused on translating client payloads into Listenarr models.
 - `<Client>RequestPlanner`, `<Client>RpcClient`, and auth/session helpers own protocol mechanics.
 
-Do not move concrete downloader behavior into `listenarr.application`. Client-specific HTTP, XML-RPC, JSON parsing, history quirks, category behavior, seed-limit evaluation, and cleanup semantics belong in `listenarr.infrastructure/DownloadClients/<Client>`. Do not introduce a shared abstract base adapter for all clients unless the behavior is genuinely identical. Prefer uniform class roles over forced inheritance because NZBGet, SABnzbd, qBittorrent, and Transmission expose different APIs and different lifecycle semantics.
+Do not move concrete downloader behavior into `listenarr.application`. Client-specific HTTP, XML-RPC, JSON parsing, history quirks, category behavior, seed-limit evaluation, and cleanup semantics belong in `listenarr.infrastructure/DownloadClients/<Client>`. Do not introduce a shared abstract base adapter for all clients unless the behavior is genuinely identical. Prefer uniform class roles over forced inheritance because NZBGet, SABnzbd, qBittorrent, Deluge, and Transmission expose different APIs and different lifecycle semantics.
 
-When refactoring a client, preserve unique behavior explicitly in the workflow that owns it. Examples include NZBGet history/final-path enrichment, SABnzbd queue/history reconciliation, qBittorrent tracker injection and post-import category marking, and Transmission local ID filtering for monitor polls.
+When refactoring a client, preserve unique behavior explicitly in the workflow that owns it. Examples include NZBGet history/final-path enrichment, SABnzbd queue/history reconciliation, qBittorrent tracker injection and post-import category marking, Deluge Web daemon/session handling, and Transmission local ID filtering for monitor polls.
 
 The main download handoff is:
 

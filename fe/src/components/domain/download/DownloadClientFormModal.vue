@@ -65,6 +65,7 @@
               <select id="type" v-model="formData.type" required @change="onTypeChange">
                 <option value="qbittorrent">qBittorrent</option>
                 <option value="transmission">Transmission</option>
+                <option value="deluge">Deluge</option>
                 <option value="sabnzbd">SABnzbd</option>
                 <option value="nzbget">NZBGet</option>
               </select>
@@ -116,17 +117,21 @@
               </Checkbox>
             </div>
 
-            <div class="form-group" v-if="formData.type === 'transmission'">
+            <div class="form-group" v-if="formData.type === 'transmission' || formData.type === 'deluge'">
               <label for="urlBase">URL Base</label>
               <input
                 id="urlBase"
                 v-model="formData.urlBase"
                 type="text"
-                placeholder="/transmission/rpc"
+                :placeholder="formData.type === 'deluge' ? '/json' : '/transmission/rpc'"
               />
-              <small
+              <small v-if="formData.type === 'transmission'"
                 >RPC path for the Transmission endpoint. Default is <code>/transmission/rpc</code>.
                 Some seedbox providers use a custom path (e.g. <code>/rpc</code>).</small
+              >
+              <small v-else
+                >Optional Deluge Web URL base before <code>/json</code>. Leave blank for the default
+                <code>/json</code> endpoint.</small
               >
             </div>
           </FormSection>
@@ -404,7 +409,7 @@ const testing = ref(false)
 
 const defaultFormData = {
   name: '',
-  type: 'qbittorrent' as 'qbittorrent' | 'transmission' | 'sabnzbd' | 'nzbget',
+  type: 'qbittorrent' as 'qbittorrent' | 'transmission' | 'deluge' | 'sabnzbd' | 'nzbget',
   host: '',
   port: 8080,
   username: '',
@@ -469,6 +474,7 @@ const getHostPlaceholder = () => {
   const placeholders: Record<string, string> = {
     qbittorrent: 'qbittorrent.tld.com',
     transmission: 'transmission.tld.com',
+    deluge: 'deluge.tld.com',
     sabnzbd: 'sabnzbd.tld.com',
     nzbget: 'nzbget.tld.com',
   }
@@ -479,6 +485,7 @@ const getPortPlaceholder = () => {
   const ports: Record<string, number> = {
     qbittorrent: 8080,
     transmission: 9091,
+    deluge: 8112,
     sabnzbd: 8080,
     nzbget: 6789,
   }
@@ -490,6 +497,7 @@ const getPortHelpText = () => {
     transmission:
       'RPC port (default: 9091). This is not the web UI port if you changed it separately.',
     qbittorrent: 'Web UI port (default: 8080). Found in qBittorrent → Options → Web UI.',
+    deluge: 'Web UI port (default: 8112). Found in Deluge Web preferences.',
     sabnzbd: 'Web interface port (default: 8080). Found in SABnzbd → Config → General.',
     nzbget: 'Web interface port (default: 6789). Found in NZBGet → Settings → Connection.',
   }
@@ -508,6 +516,7 @@ const onTypeChange = () => {
   const defaultPorts: Record<string, number> = {
     qbittorrent: 8080,
     transmission: 9091,
+    deluge: 8112,
     sabnzbd: 8080,
     nzbget: 6789,
   }
@@ -593,7 +602,7 @@ const testConnection = async () => {
         ...(formData.value.type === 'sabnzbd' && formData.value.apiKey
           ? { apiKey: formData.value.apiKey }
           : {}),
-        ...(formData.value.type === 'transmission' && formData.value.urlBase
+        ...((formData.value.type === 'transmission' || formData.value.type === 'deluge') && formData.value.urlBase
           ? { urlBase: formData.value.urlBase }
           : {}),
         ...(formData.value.category && { category: formData.value.category }),
@@ -653,7 +662,7 @@ const handleSubmit = async () => {
         ...(formData.value.type === 'sabnzbd' && formData.value.apiKey
           ? { apiKey: formData.value.apiKey }
           : {}),
-        ...(formData.value.type === 'transmission' && formData.value.urlBase
+        ...((formData.value.type === 'transmission' || formData.value.type === 'deluge') && formData.value.urlBase
           ? { urlBase: formData.value.urlBase }
           : {}),
         ...(formData.value.category && { category: formData.value.category }),

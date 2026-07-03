@@ -191,12 +191,13 @@ namespace Listenarr.Application.Downloads.Cleanup
 
                 // Resolve the client-specific ID (torrent hash, NZB ID, etc.) from the download record.
                 // The download record's Metadata dictionary stores the mapping set during AddAsync.
-                // Without this, Transmission/qBittorrent receive the Listenarr UUID which they don't recognise.
+                // Without this, torrent clients receive the Listenarr UUID which they don't recognise.
                 var clientItemId = downloadId;
                 if (downloadRecord?.Metadata != null)
                 {
                     if ((string.Equals(client.Type, "qbittorrent", StringComparison.OrdinalIgnoreCase) ||
-                         string.Equals(client.Type, "transmission", StringComparison.OrdinalIgnoreCase)) &&
+                         string.Equals(client.Type, "transmission", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(client.Type, "deluge", StringComparison.OrdinalIgnoreCase)) &&
                         downloadRecord.Metadata.TryGetValue("TorrentHash", out var hashObj))
                     {
                         var hash = hashObj?.ToString();
