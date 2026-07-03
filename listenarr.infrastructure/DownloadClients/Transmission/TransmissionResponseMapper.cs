@@ -43,7 +43,7 @@ namespace Listenarr.Infrastructure.DownloadClients.Transmission
             var addedDate = GetInt64(torrent, "added_date", "addedDate");
             var uploadRatio = GetDouble(torrent, "upload_ratio", "uploadRatio");
             var downloaded = Math.Max(0, totalSize - leftUntilDone);
-            var status = MapQueueStatus(statusCode, percentDone);
+            var status = MapQueueStatus(statusCode, percentDone, totalSize, leftUntilDone);
             var addedAt = addedDate > 0 ? DateTimeOffset.FromUnixTimeSeconds(addedDate).UtcDateTime : DateTime.UtcNow;
             var contentPath = !string.IsNullOrEmpty(downloadDir) && !string.IsNullOrEmpty(name)
                 ? FileUtils.CombineWithOptionalBase(downloadDir, name)
@@ -125,7 +125,7 @@ namespace Listenarr.Infrastructure.DownloadClients.Transmission
                 DownloadId = downloadId,
                 Title = name,
                 Category = primaryLabel,
-                Status = MapDownloadItemStatus(statusCode, percentDone),
+                Status = MapDownloadItemStatus(statusCode, percentDone, totalSize, leftUntilDone),
                 TotalSize = totalSize,
                 RemainingSize = leftUntilDone,
                 RemainingTime = remainingTime,
@@ -146,7 +146,7 @@ namespace Listenarr.Infrastructure.DownloadClients.Transmission
             };
         }
 
-        public static string MapQueueStatus(int statusCode, double percentDone)
+        public static string MapQueueStatus(int statusCode, double percentDone, long totalSize, long leftUntilDone)
         {
             var status = statusCode switch
             {
@@ -161,14 +161,14 @@ namespace Listenarr.Infrastructure.DownloadClients.Transmission
                 _ => "unknown"
             };
 
-            return percentDone >= 100.0 && status is "seeding" or "queued" or "paused"
+            return IsCompletedFromReliableTelemetry(statusCode, percentDone, totalSize, leftUntilDone) && status is "seeding" or "queued" or "paused"
                 ? "completed"
                 : status;
         }
 
-        public static DownloadItemStatus MapDownloadItemStatus(int statusCode, double percentDone)
+        public static DownloadItemStatus MapDownloadItemStatus(int statusCode, double percentDone, long totalSize, long leftUntilDone)
         {
-            if (percentDone >= 100.0 && statusCode is 0 or 3 or 5 or 6)
+            if (IsCompletedFromReliableTelemetry(statusCode, percentDone, totalSize, leftUntilDone))
             {
                 return DownloadItemStatus.Completed;
             }
@@ -184,6 +184,21 @@ namespace Listenarr.Infrastructure.DownloadClients.Transmission
                 6 => DownloadItemStatus.Downloading,
                 _ => DownloadItemStatus.Warning
             };
+        }
+
+        private static bool IsCompletedFromReliableTelemetry(int statusCode, double percentDone, long totalSize, long leftUntilDone)
+        {
+            if (statusCode is not (0 or 3 or 5 or 6))
+            {
+                return false;
+            }
+
+            if (totalSize <= 0)
+            {
+                return false;
+            }
+
+            return percentDone >= 100.0 || leftUntilDone <= 0;
         }
 
         public static List<string> ExtractLabels(JsonElement torrent)
