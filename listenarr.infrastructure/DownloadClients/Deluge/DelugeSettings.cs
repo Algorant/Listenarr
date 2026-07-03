@@ -8,14 +8,11 @@
  * (at your option) any later version.
  */
 
-namespace Listenarr.Infrastructure.DownloadClients.Common
+namespace Listenarr.Infrastructure.DownloadClients.Deluge
 {
-    internal static class DownloadClientTypes
+    internal static class DelugeSettings
     {
-        public const string Qbittorrent = "qbittorrent";
-        public const string Transmission = "transmission";
-        public const string Sabnzbd = "sabnzbd";
-        public const string Nzbget = "nzbget";
-        public const string Deluge = "deluge";
+        public static string? Get(DownloadClientConfiguration client, string key)
+            => client.Settings != null && client.Settings.TryGetValue(key, out var value) ? value?.ToString() : null;
     }
 }
