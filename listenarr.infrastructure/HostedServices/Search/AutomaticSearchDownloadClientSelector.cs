@@ -25,6 +25,8 @@ namespace Listenarr.Infrastructure.HostedServices.Search
         IServiceScopeFactory serviceScopeFactory,
         ILogger logger)
     {
+        private static readonly string[] TorrentClientPreferenceOrder = ["qbittorrent", "transmission", "deluge"];
+
         public async Task<string> GetAppropriateDownloadClientAsync(SearchResult searchResult, bool isTorrent)
         {
             using var scope = serviceScopeFactory.CreateScope();
@@ -46,8 +48,9 @@ namespace Listenarr.Infrastructure.HostedServices.Search
 
             if (isTorrent)
             {
-                var client = enabledClients.FirstOrDefault(c => c.Type.Equals("qbittorrent", StringComparison.OrdinalIgnoreCase))
-                          ?? enabledClients.FirstOrDefault(c => c.Type.Equals("transmission", StringComparison.OrdinalIgnoreCase));
+                var client = TorrentClientPreferenceOrder
+                    .Select(preferredType => enabledClients.FirstOrDefault(c => c.Type.Equals(preferredType, StringComparison.OrdinalIgnoreCase)))
+                    .FirstOrDefault(c => c != null);
 
                 if (client != null)
                 {
@@ -55,7 +58,7 @@ namespace Listenarr.Infrastructure.HostedServices.Search
                 }
                 else
                 {
-                    logger.LogWarning("No torrent client (qBittorrent or Transmission) found among enabled clients");
+                    logger.LogWarning("No torrent client (qBittorrent, Transmission, or Deluge) found among enabled clients");
                 }
 
                 return client?.Id ?? string.Empty;
