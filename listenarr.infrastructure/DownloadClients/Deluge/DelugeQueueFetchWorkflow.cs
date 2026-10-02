@@ -9,6 +9,7 @@
  */
 
 using System.Text.Json;
+using Listenarr.Domain.Common;
 using Microsoft.Extensions.Logging;
 
 namespace Listenarr.Infrastructure.DownloadClients.Deluge

@@ -9,10 +9,13 @@
  */
 
 using System.Text.Json;
+using Listenarr.Tests.Common;
 
 namespace Listenarr.Tests.Features.Application.Security.Redaction
 {
-    public class ApiResponseRedactorTests
+    [Trait("Name", "ApiResponseRedactorTests")]
+    [Trait("Category", "Security")]
+    public class ApiResponseRedactorTests : BaseTests
     {
         [Fact]
         public void DownloadClientResponses_IncludeConfiguredDownloadPath()

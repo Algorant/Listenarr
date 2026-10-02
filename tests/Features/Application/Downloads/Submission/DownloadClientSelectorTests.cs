@@ -10,10 +10,13 @@
 
 using Listenarr.Tests.Builders;
 using Microsoft.Extensions.Logging.Abstractions;
+using Listenarr.Tests.Common;
 
 namespace Listenarr.Tests.Features.Application.Downloads.Submission
 {
-    public class DownloadClientSelectorTests
+    [Trait("Name", "DownloadClientSelectorTests")]
+    [Trait("Category", "DownloadClientSelection")]
+    public class DownloadClientSelectorTests : BaseTests
     {
         [Fact]
         public async Task GetAppropriateDownloadClientAsync_SelectsEnabledDelugeWhenItIsTheOnlyTorrentClient()

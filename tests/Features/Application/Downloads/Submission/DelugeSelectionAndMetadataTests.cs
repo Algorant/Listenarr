@@ -4,6 +4,8 @@ using Listenarr.Tests.Common;
 
 namespace Listenarr.Tests.Features.Application.Downloads.Submission
 {
+    [Trait("Name", "DelugeSelectionAndMetadataTests")]
+    [Trait("Category", "DownloadClientSelection")]
     public class DelugeSelectionAndMetadataTests : BaseTests
     {
         [Fact]
